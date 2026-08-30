@@ -353,10 +353,15 @@
   function cardHtml(b, i) {
     const delay = Math.min(i * 18, 220);
     let timeHtml;
+    let meterWidth = 100;
     if (b.alive) {
-      timeHtml = '<div class="alive-label">VIVO</div>';
+      timeHtml = '<div class="alive-label">VIVO</div><div class="meter"><i style="width:100%"></i></div>';
     } else if (b.respawnAt) {
-      const cd = formatCountdown(b.respawnAt - Date.now());
+      const ms = b.respawnAt - Date.now();
+      const cd = formatCountdown(ms);
+      // barra tipo HP: más llena = más cerca del respawn (o tiempo restante relativo a 24h)
+      const day = 24 * 3600 * 1000;
+      meterWidth = ms <= 0 ? 100 : Math.max(6, Math.min(100, Math.round(100 - (ms / day) * 100)));
       timeHtml =
         '<div class="countdown ' +
         cd.cls +
@@ -367,9 +372,12 @@
         "</div>" +
         '<div class="when">' +
         formatWhen(b.respawnAt) +
-        "</div>";
+        "</div>" +
+        '<div class="meter"><i style="width:' +
+        meterWidth +
+        '%"></i></div>';
     } else {
-      timeHtml = '<div class="when">Sin hora</div>';
+      timeHtml = '<div class="when">Sin hora</div><div class="meter"><i style="width:0%"></i></div>';
     }
 
     return (
@@ -397,7 +405,7 @@
       escapeHtml(b.city) +
       "</span>" +
       '<span class="badge cat">' +
-      (b.epic ? "Epico" : "Raid") +
+      (b.epic ? "Epic" : "Raid") +
       "</span>" +
       "</div></article>"
     );
@@ -417,7 +425,7 @@
 
     if (!list.length) {
       listEl.innerHTML =
-        '<div class="empty"><strong>Nada por aca</strong>Proba otra ciudad o limpia la busqueda.</div>';
+        '<div class="empty"><strong>No matches</strong>Proba otra ciudad o limpia la busqueda.</div>';
       return;
     }
 
@@ -467,7 +475,7 @@
     cityChipsEl.innerHTML = cities
       .map(function (c) {
         return (
-          '<button type="button" class="chip' +
+          '<button type="button" class="l2-tab' +
           (c === "all" ? " active" : "") +
           '" data-city="' +
           c +
@@ -484,7 +492,9 @@
       const btn = e.target.closest("[data-cat]");
       if (!btn) return;
       state.cat = btn.dataset.cat;
-      $("catChips").querySelectorAll(".chip").forEach((c) => c.classList.toggle("active", c === btn));
+      $("catChips")
+        .querySelectorAll(".l2-tab")
+        .forEach((c) => c.classList.toggle("active", c === btn));
       render();
     });
 
@@ -492,7 +502,9 @@
       const btn = e.target.closest("[data-city]");
       if (!btn) return;
       state.city = btn.dataset.city;
-      cityChipsEl.querySelectorAll(".chip").forEach((c) => c.classList.toggle("active", c === btn));
+      cityChipsEl
+        .querySelectorAll(".l2-tab")
+        .forEach((c) => c.classList.toggle("active", c === btn));
       render();
     });
 
