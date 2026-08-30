@@ -61,6 +61,10 @@
     return (window.BOSS_LOCATIONS || {})[key] || "-";
   }
 
+  function isQuestBoss(name) {
+    return !!(window.QUEST_BOSSES || {})[normalizeName(name)];
+  }
+
   function isAlive(status) {
     const s = String(status).toLowerCase();
     return s.includes("vivo") || s.includes("alive");
@@ -142,6 +146,7 @@
           category,
           city: resolveCity(name),
           epic: isEpic(category),
+          quest: isQuestBoss(name),
           alive: isAlive(status),
         });
       }
@@ -160,6 +165,7 @@
       category: b.category || (b.epic ? "Epic Bosses" : "Raid Bosses"),
       city: resolveCity(b.name),
       epic: b.epic != null ? !!b.epic : isEpic(b.category),
+      quest: b.quest != null ? !!b.quest : isQuestBoss(b.name),
       alive: b.alive != null ? !!b.alive : isAlive(b.status),
     }));
   }
@@ -305,6 +311,7 @@
     return state.bosses.filter((b) => {
       if (state.cat === "epic" && !b.epic) return false;
       if (state.cat === "raid" && b.epic) return false;
+      if (state.cat === "quest" && !b.quest) return false;
       if (state.cat === "vivo" && !b.alive) return false;
       if (state.cat === "muerto" && b.alive) return false;
       if (state.city !== "all" && b.city !== state.city) return false;
@@ -381,8 +388,10 @@
       '<span class="badge city">' +
       escapeHtml(b.city) +
       "</span>" +
-      '<span class="badge cat">' +
-      (b.epic ? "Epic" : "Raid") +
+      '<span class="badge cat' +
+      (b.quest ? " quest" : "") +
+      '">' +
+      (b.quest ? "Quest" : b.epic ? "Epic" : "Raid") +
       "</span>" +
       "</div></article>"
     );

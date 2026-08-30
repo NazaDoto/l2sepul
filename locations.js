@@ -217,3 +217,36 @@ window.BOSS_LOCATIONS = {
   "zombie lord farakelsus": "Gludio"
 };
 window.CITIES = ['Aden','Giran','Goddard','Rune','Dion','Heine','Oren','Gludio','Gludin','Hunters','Schuttgart'];
+
+/* Bosses ligados a quests / summons / instancias de Interlude */
+window.QUEST_BOSSES = {
+  "shilens messenger cabrio": 1,
+  "death lord hallate": 1,
+  "kernon": 1,
+  "longhorn golkonda": 1,
+  "flame of splendor barakiel": 1,
+  "demons agent falston": 1,
+  "hestia guardian deity of the hot springs": 1,
+  "vanor chief kandra": 1,
+  "plague golem": 1,
+  "ketras hero hekaton": 1,
+  "ketras commander tayr": 1,
+  "ketras chief brakki": 1,
+  "varkas hero shadith": 1,
+  "varkas commander mos": 1,
+  "varkas chief horus": 1,
+  "andreas van halter": 1,
+  "frintezza": 1,
+  "scarlet van halisha": 1,
+  "anakims nemesis zakaron": 1,
+  "queen shyeed": 1,
+  "uruka": 1,
+  "ember": 1,
+  "gordon": 1,
+  "discarded guardian": 1,
+  "gran boss sepul": 1,
+  "immortal savior mardil": 1,
+  "shilens priest hisilrome": 1,
+  "bloody empress decarbia": 1,
+  "meanas anor": 1
+};

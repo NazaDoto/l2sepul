@@ -340,6 +340,12 @@ body {
   border-color: rgba(215, 181, 109, 0.25);
 }
 
+.badge.cat.quest {
+  color: #e8d6ff;
+  background: linear-gradient(180deg, #5a3d8a, #3a2558);
+  border-color: #a07ad4;
+}
+
 .card-time {
   text-align: right;
   min-width: 84px;
