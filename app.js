@@ -40,7 +40,6 @@
 
   const $ = (id) => document.getElementById(id);
   const listEl = $("list");
-  const statsEl = $("stats");
   const loaderEl = $("loader");
   const toastEl = $("toast");
   const lastUpdateEl = $("lastUpdate");
@@ -319,35 +318,13 @@
 
   function sortBosses(list) {
     return [...list].sort((a, b) => {
-      if (a.alive !== b.alive) return a.alive ? -1 : 1;
+      // Vivos al final: priorizar los que van a respawnear pronto
+      if (a.alive !== b.alive) return a.alive ? 1 : -1;
       const ta = a.respawnAt ? a.respawnAt.getTime() : Infinity;
       const tb = b.respawnAt ? b.respawnAt.getTime() : Infinity;
       if (ta !== tb) return ta - tb;
       return a.name.localeCompare(b.name);
     });
-  }
-
-  function renderStats(list) {
-    const alive = list.filter((b) => b.alive).length;
-    const dead = list.length - alive;
-    const soon = list.filter((b) => {
-      if (b.alive || !b.respawnAt) return false;
-      const ms = b.respawnAt - Date.now();
-      return ms > 0 && ms < 3600000;
-    }).length;
-    statsEl.innerHTML =
-      '<div class="stat"><strong>' +
-      list.length +
-      "</strong><span>Visibles</span></div>" +
-      '<div class="stat"><strong>' +
-      alive +
-      "</strong><span>Vivos</span></div>" +
-      '<div class="stat"><strong>' +
-      dead +
-      "</strong><span>Muertos</span></div>" +
-      '<div class="stat"><strong>' +
-      soon +
-      "</strong><span>&lt;1h</span></div>";
   }
 
   function cardHtml(b, i) {
@@ -421,7 +398,6 @@
 
   function render() {
     const list = sortBosses(filtered());
-    renderStats(list);
 
     if (!list.length) {
       listEl.innerHTML =
@@ -429,16 +405,17 @@
       return;
     }
 
-    const epic = list.filter((b) => b.epic);
-    const raid = list.filter((b) => !b.epic);
+    // Una sola lista ordenada por respawn (próximos primero)
+    const dead = list.filter((b) => !b.alive);
+    const alive = list.filter((b) => b.alive);
     let html = "";
-    if (epic.length && state.cat !== "raid") {
-      html += '<div class="section-title">Epic Bosses · ' + epic.length + "</div>";
-      html += epic.map((b, i) => cardHtml(b, i)).join("");
+    if (dead.length) {
+      html += '<div class="section-title">Proximos respawns · ' + dead.length + "</div>";
+      html += dead.map((b, i) => cardHtml(b, i)).join("");
     }
-    if (raid.length && state.cat !== "epic") {
-      html += '<div class="section-title">Raid Bosses · ' + raid.length + "</div>";
-      html += raid.map((b, i) => cardHtml(b, i + epic.length)).join("");
+    if (alive.length && state.cat !== "muerto") {
+      html += '<div class="section-title">Vivos · ' + alive.length + "</div>";
+      html += alive.map((b, i) => cardHtml(b, i + dead.length)).join("");
     }
     listEl.innerHTML = html;
   }

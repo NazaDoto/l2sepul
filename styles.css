@@ -235,38 +235,6 @@ body {
   padding: 7px 10px;
 }
 
-.l2-stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 4px;
-  margin-bottom: 8px;
-}
-
-.stat {
-  padding: 7px 4px 6px;
-  text-align: center;
-  background: var(--inset);
-  border: 1px solid rgba(215, 181, 109, 0.28);
-  border-radius: 2px;
-}
-
-.stat strong {
-  display: block;
-  font-size: 0.95rem;
-  font-weight: 700;
-  color: var(--gold-hi);
-  line-height: 1.1;
-}
-
-.stat span {
-  display: block;
-  margin-top: 2px;
-  font-size: 0.58rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
 .l2-list {
   display: flex;
   flex-direction: column;
@@ -274,7 +242,7 @@ body {
   border: 1px solid rgba(215, 181, 109, 0.3);
   background: var(--inset);
   min-height: 200px;
-  max-height: calc(100dvh - 320px);
+  max-height: calc(100dvh - 280px);
   overflow: auto;
   -webkit-overflow-scrolling: touch;
 }
