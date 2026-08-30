@@ -1,10 +1,22 @@
 ﻿(() => {
   const SOURCE = "https://www.sepul.com.ar/?page=boss";
   const CACHE_KEY = "l2sepul_bosses_v1";
-  const LIVE_TTL_MS = 5 * 60 * 1000; // evita gastar el free tier de Microlink
+  const LIVE_TTL_MS = 2 * 60 * 1000; // cache local breve; no hace falta ahorrar cupo
 
-  // Microlink tiene CORS abierto y devuelve el HTML de Sepul (sin backend propio).
+  // Proxies CORS publicos (Sepul no manda Access-Control-Allow-Origin).
+  // CorsBridge: API publica sin cupo diario estricto. Microlink: fallback (25/dia).
   const LIVE_SOURCES = [
+    {
+      id: "corsbridge",
+      url: "https://api.cors.syrins.tech/?url=" + encodeURIComponent(SOURCE),
+      parse: async (res) => {
+        const html = await res.text();
+        if (!html || !/Antharas|Boss Status|Epic Bosses/i.test(html)) {
+          throw new Error("corsbridge empty");
+        }
+        return { type: "html", data: html };
+      },
+    },
     {
       id: "microlink",
       url:
