@@ -59,6 +59,28 @@
         </div>
       </div>
     </div>
+
+    <div class="map-overlay" id="mapOverlay" hidden>
+      <div class="l2-window map-window" role="dialog" aria-modal="true" aria-labelledby="mapBossName">
+        <header class="l2-titlebar">
+          <div class="l2-titlebar-ornament" aria-hidden="true"></div>
+          <h2 class="l2-title" id="mapBossName">Boss</h2>
+          <button type="button" class="l2-btn-icon" id="mapCloseBtn" aria-label="Cerrar">✕</button>
+        </header>
+        <div class="l2-body map-body">
+          <p class="map-meta" id="mapMeta">Buscando ubicación…</p>
+          <div class="map-frame">
+            <canvas id="mapCanvas" width="360" height="360" aria-label="Mapa del mundo"></canvas>
+            <div class="map-loader" id="mapLoader" hidden>
+              <div class="spinner"></div>
+              <p>Buscando ubicación…</p>
+            </div>
+          </div>
+          <p class="map-coords" id="mapCoords"></p>
+          <p class="map-hint">Mapa Interlude · zoom local en el spawn</p>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="locations.js"></script>

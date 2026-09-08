@@ -381,7 +381,11 @@
       (b.alive ? " is-alive" : "") +
       '" style="animation-delay:' +
       delay +
-      'ms">' +
+      'ms" data-name="' +
+      escapeHtml(b.name) +
+      '" data-city="' +
+      escapeHtml(b.city) +
+      '" role="button" tabindex="0">' +
       '<h3 class="card-name">' +
       escapeHtml(b.name) +
       "</h3>" +
@@ -468,6 +472,266 @@
     }, 4200);
   }
 
+  const mapOverlay = $("mapOverlay");
+  const mapBossName = $("mapBossName");
+  const mapMeta = $("mapMeta");
+  const mapCoords = $("mapCoords");
+  const mapCanvas = $("mapCanvas");
+  const mapCloseBtn = $("mapCloseBtn");
+  const mapLoader = $("mapLoader");
+  const spawnCache = Object.create(null);
+
+  // Calibración mundo → píxeles (l2dife/php-map BASE_* para 1812x2620)
+  const MAP_IMG_SRC = "interlude.png";
+  const MAP_W = 1812;
+  const MAP_H = 2620;
+  const MAP_SCALE = 199.55;
+  const MAP_BX = 655;
+  const MAP_BY = 1310;
+  const MAP_CROP = 460; // área visible en px del mapa fuente (zoom local)
+
+  const mapImg = new Image();
+  mapImg.decoding = "async";
+  mapImg.src = MAP_IMG_SRC;
+  let mapImgReady = false;
+  mapImg.onload = function () {
+    mapImgReady = true;
+  };
+
+  function worldToMapPx(x, y) {
+    return {
+      px: x / MAP_SCALE + MAP_BX,
+      py: y / MAP_SCALE + MAP_BY,
+    };
+  }
+
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+
+  function drawBossMarker(ctx, mx, my) {
+    ctx.fillStyle = "#ff2a1f";
+    ctx.beginPath();
+    ctx.arc(mx, my, 6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawWorldMap(spawn) {
+    const ctx = mapCanvas.getContext("2d");
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cssW = mapCanvas.clientWidth || 360;
+    const cssH = cssW;
+    mapCanvas.width = Math.round(cssW * dpr);
+    mapCanvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    ctx.fillStyle = "#1a1510";
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    if (!mapImgReady || !mapImg.complete || !mapImg.naturalWidth) {
+      ctx.fillStyle = "#d8d2c6";
+      ctx.font = "600 13px 'Noto Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Cargando mapa…", cssW / 2, cssH / 2);
+      ctx.textAlign = "start";
+      if (!mapImg.src) mapImg.src = MAP_IMG_SRC;
+      mapImg.decode().then(function () {
+        mapImgReady = true;
+        drawWorldMap(spawn);
+      }).catch(function () {});
+      return;
+    }
+
+    if (!spawn || typeof spawn.x !== "number" || typeof spawn.y !== "number") {
+      // sin coords: mostrar overview centrado del continente
+      const sx = (MAP_W - MAP_CROP * 1.6) / 2;
+      const sy = (MAP_H - MAP_CROP * 1.6) / 2;
+      ctx.drawImage(
+        mapImg,
+        sx,
+        sy,
+        MAP_CROP * 1.6,
+        MAP_CROP * 1.6,
+        0,
+        0,
+        cssW,
+        cssH
+      );
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.fillRect(0, 0, cssW, cssH);
+      ctx.fillStyle = "#f3e2b0";
+      ctx.font = "600 13px 'Noto Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Sin coordenadas de spawn", cssW / 2, cssH / 2);
+      ctx.textAlign = "start";
+      return;
+    }
+
+    const pos = worldToMapPx(spawn.x, spawn.y);
+    const crop = MAP_CROP;
+    let sx = pos.px - crop / 2;
+    let sy = pos.py - crop / 2;
+    sx = clamp(sx, 0, MAP_W - crop);
+    sy = clamp(sy, 0, MAP_H - crop);
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(mapImg, sx, sy, crop, crop, 0, 0, cssW, cssH);
+
+    // viñeta suave
+    const grd = ctx.createRadialGradient(
+      cssW / 2,
+      cssH / 2,
+      cssW * 0.35,
+      cssW / 2,
+      cssH / 2,
+      cssW * 0.72
+    );
+    grd.addColorStop(0, "rgba(0,0,0,0)");
+    grd.addColorStop(1, "rgba(8,10,16,0.35)");
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    const mx = ((pos.px - sx) / crop) * cssW;
+    const my = ((pos.py - sy) / crop) * cssH;
+    drawBossMarker(ctx, mx, my);
+  }
+
+  async function apiJson(url) {
+    const ctrl = new AbortController();
+    const t = setTimeout(function () {
+      ctrl.abort();
+    }, 12000);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal, cache: "force-cache" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return await res.json();
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  function pickMonster(list, name) {
+    const key = normalizeName(name);
+    const scored = (list || []).map(function (m) {
+      const n = normalizeName(m.name || "");
+      let score = 0;
+      if (n === key) score += 100;
+      else if (n.indexOf(key) === 0) score += 35;
+      else if (n.includes(key) || key.includes(n)) score += 15;
+      // preferir el nombre más corto en empates (Zaken > Zaken's Pikeman)
+      score += Math.max(0, 12 - n.length * 0.15);
+      if (/GrandBoss/i.test(m.npcType || "")) score += 30;
+      else if (/RaidBoss/i.test(m.npcType || "")) score += 20;
+      if (m.title === "Raid Boss") score += 8;
+      return { m: m, score: score };
+    });
+    scored.sort(function (a, b) {
+      return b.score - a.score;
+    });
+    return scored[0] && scored[0].score >= 30 ? scored[0].m : null;
+  }
+
+  async function fetchSpawn(name) {
+    if (spawnCache[name]) return spawnCache[name];
+    const q = encodeURIComponent(name);
+    const search = await apiJson(
+      "https://l2api.dev/api/interlude/monsters?q=" + q + "&limit=40"
+    );
+    const monster = pickMonster(search.data, name);
+    if (!monster) throw new Error("Boss no encontrado en l2api");
+
+    let spawn = null;
+    let region = null;
+    let location = null;
+
+    try {
+      const npcSpawns = await apiJson(
+        "https://l2api.dev/api/interlude/npcs/" + monster.id + "/spawns"
+      );
+      spawn = (npcSpawns.data && npcSpawns.data[0]) || null;
+      if (spawn) {
+        region = spawn.region || null;
+        location = spawn.location || null;
+      }
+    } catch (_) {}
+
+    if (!spawn) {
+      const raw = await apiJson(
+        "https://l2api.dev/api/interlude/raw/monsters/" + monster.id + "/spawns"
+      );
+      spawn = (raw.data && raw.data[0]) || null;
+    }
+
+    if (!spawn) throw new Error("Sin coordenadas de spawn");
+
+    // Completar region desde detalle si falta
+    if (!region || !location) {
+      try {
+        const detail = await apiJson(
+          "https://l2api.dev/api/interlude/monsters/" + monster.id
+        );
+        region = region || (detail.data && detail.data.primaryRegion) || null;
+        location = location || (detail.data && detail.data.primaryLocation) || null;
+      } catch (_) {}
+    }
+
+    const result = {
+      id: monster.id,
+      name: monster.name,
+      x: spawn.x,
+      y: spawn.y,
+      z: spawn.z,
+      region: region,
+      location: location,
+    };
+    spawnCache[name] = result;
+    return result;
+  }
+
+  function setMapLoading(on) {
+    mapLoader.classList.toggle("is-on", on);
+    mapLoader.hidden = !on;
+  }
+
+  function openMap(name, fallbackCity) {
+    mapOverlay.hidden = false;
+    mapOverlay.classList.add("is-on");
+    mapBossName.textContent = name;
+    mapMeta.textContent = fallbackCity && fallbackCity !== "-" ? "Ciudad: " + fallbackCity : "…";
+    mapCoords.textContent = "";
+    setMapLoading(true);
+    drawWorldMap(null);
+
+    fetchSpawn(name)
+      .then(function (spawn) {
+        const bits = [];
+        if (spawn.location && spawn.location.name) bits.push(spawn.location.name);
+        if (spawn.region && spawn.region.name) bits.push(spawn.region.name);
+        if (fallbackCity && fallbackCity !== "-") bits.push(fallbackCity);
+        mapMeta.textContent = bits.filter(Boolean).join(" · ") || "Ubicación encontrada";
+        mapCoords.textContent =
+          "X: " + spawn.x + "   Y: " + spawn.y + "   Z: " + spawn.z + "   ID: " + spawn.id;
+        drawWorldMap(spawn);
+      })
+      .catch(function (err) {
+        mapMeta.textContent =
+          "No se pudo obtener el mapa" +
+          (fallbackCity && fallbackCity !== "-" ? " · Ciudad: " + fallbackCity : "");
+        mapCoords.textContent = String(err.message || err);
+        drawWorldMap(null);
+      })
+      .finally(function () {
+        setMapLoading(false);
+      });
+  }
+
+  function closeMap() {
+    setMapLoading(false);
+    mapOverlay.classList.remove("is-on");
+    mapOverlay.hidden = true;
+  }
+
   function buildCityChips() {
     const cities = ["all"].concat(window.CITIES || []);
     cityChipsEl.innerHTML = cities
@@ -513,6 +777,28 @@
 
     refreshBtn.addEventListener("click", () => {
       loadBosses({ force: true }).catch(() => {});
+    });
+
+    listEl.addEventListener("click", (e) => {
+      const card = e.target.closest(".card[data-name]");
+      if (!card) return;
+      openMap(card.dataset.name, card.dataset.city);
+    });
+
+    listEl.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const card = e.target.closest(".card[data-name]");
+      if (!card) return;
+      e.preventDefault();
+      openMap(card.dataset.name, card.dataset.city);
+    });
+
+    mapCloseBtn.addEventListener("click", closeMap);
+    mapOverlay.addEventListener("click", (e) => {
+      if (e.target === mapOverlay) closeMap();
+    });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && mapOverlay.classList.contains("is-on")) closeMap();
     });
   }
 
