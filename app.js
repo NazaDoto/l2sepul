@@ -432,10 +432,15 @@
 
   function render() {
     const list = sortBosses(filtered());
+    if (state.selectedName && !list.some(function (b) { return b.name === state.selectedName; })) {
+      state.selectedName = null;
+      state.selectedCity = null;
+    }
 
     if (!list.length) {
       listEl.innerHTML =
         '<div class="empty"><strong>No matches</strong>Proba otra ciudad o limpia la busqueda.</div>';
+      renderPins();
       return;
     }
 
@@ -453,6 +458,7 @@
     }
     listEl.innerHTML = html;
     syncSelectedCard();
+    renderPins();
   }
 
   function syncSelectedCard() {
@@ -505,6 +511,10 @@
   let spawnLoading = false;
   let mapView = { ox: 0, oy: 0, scale: 1, sx: 0, sy: 0 };
   let spawnLoadToken = 0;
+  const cam = { x: 0, y: 0, scale: 1, fitted: false, user: false };
+  const mapFrame = mapCanvas.parentElement;
+  let mapDrag = null;
+  let suppressPinClick = false;
   const PIN_SVG =
     '<svg viewBox="0 0 16 22" aria-hidden="true"><path class="pin-body" d="M8 21S1.4 13.1 1.4 8A6.6 6.6 0 0 1 14.6 8C14.6 13.1 8 21 8 21z" fill="#d4453d" stroke="#f0d79a" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="7.6" r="2" fill="#f3e2b0"/></svg>';
 
@@ -589,14 +599,57 @@
     };
   }
 
-  function drawFullWorld(ctx, cssW, cssH) {
-    const scale = Math.min(cssW / MAP_W, cssH / MAP_H);
-    const drawW = MAP_W * scale;
-    const drawH = MAP_H * scale;
-    const ox = (cssW - drawW) / 2;
-    const oy = (cssH - drawH) / 2;
-    mapView = { ox: ox, oy: oy, scale: scale, sx: 0, sy: 0 };
-    ctx.drawImage(mapImg, 0, 0, MAP_W, MAP_H, ox, oy, drawW, drawH);
+  function fitCamToWidth(cssW, cssH) {
+    cam.scale = cssW / MAP_W;
+    cam.x = 0;
+    const viewH = cssH / cam.scale;
+    cam.y = viewH >= MAP_H ? (MAP_H - viewH) / 2 : (MAP_H - viewH) / 2;
+    cam.fitted = true;
+    clampCam(cssW, cssH);
+  }
+
+  function clampCam(cssW, cssH) {
+    const viewW = cssW / cam.scale;
+    const viewH = cssH / cam.scale;
+    if (viewW >= MAP_W) cam.x = (MAP_W - viewW) / 2;
+    else cam.x = clamp(cam.x, 0, MAP_W - viewW);
+    if (viewH >= MAP_H) cam.y = (MAP_H - viewH) / 2;
+    else cam.y = clamp(cam.y, 0, MAP_H - viewH);
+  }
+
+  function syncMapViewFromCam() {
+    mapView = { ox: 0, oy: 0, scale: cam.scale, sx: cam.x, sy: cam.y };
+  }
+
+  function drawDesktopMap(ctx, cssW, cssH) {
+    if (!cam.fitted || !cam.user) fitCamToWidth(cssW, cssH);
+    else clampCam(cssW, cssH);
+    syncMapViewFromCam();
+    const viewW = cssW / cam.scale;
+    const viewH = cssH / cam.scale;
+    ctx.drawImage(mapImg, cam.x, cam.y, viewW, viewH, 0, 0, cssW, cssH);
+  }
+
+  function positionPins() {
+    if (!mapPins || !isDesktopLayout()) return;
+    const size = mapViewSize();
+    const pins = mapPins.children;
+    for (let i = 0; i < pins.length; i++) {
+      const pin = pins[i];
+      const spawn = spawnCache[pin.dataset.name];
+      if (!spawn || typeof spawn.x !== "number") {
+        pin.style.display = "none";
+        continue;
+      }
+      const p = worldToScreen(spawn.x, spawn.y);
+      if (p.x < -16 || p.y < -16 || p.x > size.cssW + 16 || p.y > size.cssH + 16) {
+        pin.style.display = "none";
+        continue;
+      }
+      pin.style.display = "";
+      pin.style.left = p.x.toFixed(1) + "px";
+      pin.style.top = p.y.toFixed(1) + "px";
+    }
   }
 
   function drawWorldMap(spawn) {
@@ -634,8 +687,9 @@
     ctx.imageSmoothingQuality = "high";
 
     if (isDesktopLayout()) {
-      drawFullWorld(ctx, cssW, cssH);
-      renderPins();
+      drawDesktopMap(ctx, cssW, cssH);
+      if (mapPins.childElementCount) positionPins();
+      else renderPins();
       return;
     }
 
@@ -722,7 +776,7 @@
     }
     const size = mapViewSize();
     const parts = [];
-    state.bosses.forEach(function (b) {
+    filtered().forEach(function (b) {
       const spawn = spawnCache[b.name];
       if (!spawn || typeof spawn.x !== "number" || typeof spawn.y !== "number") return;
       const p = worldToScreen(spawn.x, spawn.y);
@@ -763,8 +817,9 @@
 
   function updateDesktopMapStatus() {
     if (!isDesktopLayout()) return;
-    const total = state.bosses.length;
-    const ready = state.bosses.filter(function (b) {
+    const visible = filtered();
+    const total = visible.length;
+    const ready = visible.filter(function (b) {
       const spawn = spawnCache[b.name];
       return spawn && typeof spawn.x === "number";
     }).length;
@@ -772,7 +827,7 @@
     mapBossName.textContent = "Mapa";
     mapMeta.textContent =
       ready === total
-        ? "Todos los bosses · " + ready + " ubicaciones"
+        ? ready + " ubicaciones"
         : "Cargando ubicaciones · " + ready + "/" + total;
     mapCoords.textContent = "";
   }
@@ -1147,11 +1202,21 @@
       if (isDesktopLayout()) return;
       if (e.target === mapOverlay) closeMap();
     });
-    mapPins.addEventListener("click", (e) => {
-      const pin = e.target.closest(".map-pin");
-      if (!pin) return;
-      openMap(pin.dataset.name, pin.dataset.city, true);
-    });
+    mapPins.addEventListener(
+      "click",
+      (e) => {
+        if (suppressPinClick) {
+          e.preventDefault();
+          e.stopPropagation();
+          suppressPinClick = false;
+          return;
+        }
+        const pin = e.target.closest(".map-pin");
+        if (!pin) return;
+        openMap(pin.dataset.name, pin.dataset.city, true);
+      },
+      true
+    );
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && mapOverlay.classList.contains("is-on")) closeMap();
     });
@@ -1164,11 +1229,103 @@
     }
     window.addEventListener("resize", scheduleMapDraw);
     if (window.ResizeObserver) {
-      const mapFrame = mapCanvas.parentElement;
       if (mapFrame) {
-        new ResizeObserver(scheduleMapDraw).observe(mapFrame);
+        new ResizeObserver(function () {
+          if (!cam.user) cam.fitted = false;
+          scheduleMapDraw();
+        }).observe(mapFrame);
       }
     }
+    bindMapNav();
+  }
+
+  function bindMapNav() {
+    if (!mapFrame) return;
+
+    mapFrame.addEventListener(
+      "wheel",
+      function (e) {
+        if (!isDesktopLayout()) return;
+        e.preventDefault();
+        const size = mapViewSize();
+        if (size.cssW < 8 || size.cssH < 8) return;
+        const rect = mapFrame.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const mapX = cam.x + mx / cam.scale;
+        const mapY = cam.y + my / cam.scale;
+        const factor = e.deltaY < 0 ? 1.14 : 1 / 1.14;
+        const minScale = Math.min(size.cssW / MAP_W, size.cssH / MAP_H) * 0.92;
+        const maxScale = (size.cssW / MAP_W) * 8;
+        cam.scale = clamp(cam.scale * factor, minScale, maxScale);
+        cam.x = mapX - mx / cam.scale;
+        cam.y = mapY - my / cam.scale;
+        cam.fitted = true;
+        cam.user = true;
+        clampCam(size.cssW, size.cssH);
+        scheduleMapDraw();
+      },
+      { passive: false }
+    );
+
+    mapFrame.addEventListener("pointerdown", function (e) {
+      if (!isDesktopLayout() || e.button !== 0) return;
+      e.preventDefault();
+      mapDrag = {
+        id: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        camX: cam.x,
+        camY: cam.y,
+        moved: false,
+      };
+      try {
+        mapFrame.setPointerCapture(e.pointerId);
+      } catch (_) {}
+    });
+
+    mapFrame.addEventListener("pointermove", function (e) {
+      if (!mapDrag || e.pointerId !== mapDrag.id) return;
+      const dx = e.clientX - mapDrag.x;
+      const dy = e.clientY - mapDrag.y;
+      if (!mapDrag.moved && dx * dx + dy * dy < 25) return;
+      mapDrag.moved = true;
+      suppressPinClick = true;
+      cam.x = mapDrag.camX - dx / cam.scale;
+      cam.y = mapDrag.camY - dy / cam.scale;
+      cam.fitted = true;
+      cam.user = true;
+      const size = mapViewSize();
+      clampCam(size.cssW, size.cssH);
+      mapFrame.classList.add("is-panning");
+      scheduleMapDraw();
+    });
+
+    function endDrag(e) {
+      if (!mapDrag || (e && e.pointerId !== mapDrag.id)) return;
+      const moved = mapDrag.moved;
+      const cx = e.clientX;
+      const cy = e.clientY;
+      mapDrag = null;
+      mapFrame.classList.remove("is-panning");
+      if (moved) {
+        suppressPinClick = true;
+        setTimeout(function () {
+          suppressPinClick = false;
+        }, 0);
+        return;
+      }
+      if (e.type !== "pointerup") return;
+      const el = document.elementFromPoint(cx, cy);
+      const pin = el && el.closest ? el.closest(".map-pin") : null;
+      if (pin) openMap(pin.dataset.name, pin.dataset.city, true);
+    }
+
+    mapFrame.addEventListener("pointerup", endDrag);
+    mapFrame.addEventListener("pointercancel", endDrag);
+    mapCanvas.addEventListener("dragstart", function (e) {
+      e.preventDefault();
+    });
   }
 
   buildCityChips();
