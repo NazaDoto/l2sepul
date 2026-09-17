@@ -7,6 +7,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Boss Status · L2Sepul</title>
+  <link rel="icon" href="favicon.ico" type="image/x-icon" />
+  <link rel="shortcut icon" href="favicon.ico" type="image/x-icon" />
+  <link rel="apple-touch-icon" href="favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Noto+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -34,8 +37,7 @@
         </label>
 
         <section class="l2-tabs-wrap" aria-label="Filtros">
-          <p class="l2-nav-label">Tipo</p>
-          <div class="l2-tabs" id="catChips" role="tablist">
+          <div class="l2-tabs l2-tabs-cat" id="catChips" role="tablist">
             <button type="button" class="l2-tab active" data-cat="all">Todos</button>
             <button type="button" class="l2-tab" data-cat="epic">Épicos</button>
             <button type="button" class="l2-tab" data-cat="raid">Raids</button>
@@ -43,8 +45,10 @@
             <button type="button" class="l2-tab" data-cat="vivo">Vivos</button>
             <button type="button" class="l2-tab" data-cat="muerto">Muertos</button>
           </div>
-          <p class="l2-nav-label">Ciudad</p>
-          <div class="l2-tabs l2-tabs-city" id="cityChips"></div>
+          <aside class="l2-city-nav" aria-label="Ciudades">
+            <p class="l2-nav-label">Ciudad</p>
+            <div class="l2-tabs l2-tabs-city" id="cityChips"></div>
+          </aside>
         </section>
 
         <main class="l2-list" id="list" aria-live="polite"></main>
@@ -60,13 +64,17 @@
               <p class="map-meta" id="mapMeta">Seleccioná un boss para ver su ubicación</p>
               <div class="map-frame">
                 <canvas id="mapCanvas" width="360" height="360" aria-label="Mapa del mundo"></canvas>
+                <div class="map-pins" id="mapPins" hidden></div>
                 <div class="map-loader" id="mapLoader" hidden>
                   <div class="spinner"></div>
                   <p>Buscando ubicación…</p>
                 </div>
               </div>
               <p class="map-coords" id="mapCoords"></p>
-              <p class="map-hint">Mapa Interlude · zoom local en el spawn</p>
+              <p class="map-hint">
+                <span class="map-hint-mobile">Mapa Interlude · zoom local en el spawn</span>
+                <span class="map-hint-desktop">Mapa Interlude · hover un pin para ver el nombre</span>
+              </p>
             </div>
           </div>
         </div>

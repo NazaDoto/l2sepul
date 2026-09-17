@@ -1,7 +1,17 @@
 ﻿(() => {
   const SOURCE = "https://www.sepul.com.ar/?page=boss";
   const CACHE_KEY = "l2sepul_bosses_v1";
+  const CACHE_FLUSH_KEY = "l2sepul_flush";
+  const CACHE_FLUSH_VER = "20260917b";
+  const SPAWN_CACHE_KEY = "l2sepul_spawns_v1";
   const LIVE_TTL_MS = 2 * 60 * 1000; // cache local breve; no hace falta ahorrar cupo
+
+  try {
+    if (localStorage.getItem(CACHE_FLUSH_KEY) !== CACHE_FLUSH_VER) {
+      localStorage.removeItem(CACHE_KEY);
+      localStorage.setItem(CACHE_FLUSH_KEY, CACHE_FLUSH_VER);
+    }
+  } catch (_) {}
 
   // Proxies CORS publicos (Sepul no manda Access-Control-Allow-Origin).
   // CorsBridge (api.cors.syrins.tech) esta caido; Microlink es el live principal.
@@ -301,6 +311,7 @@
         showToast("No hubo respuesta live. Mostrando cache.");
       }
       render();
+      ensureDesktopPins();
     } finally {
       setLoading(false);
     }
@@ -445,10 +456,10 @@
   }
 
   function syncSelectedCard() {
-    if (!state.selectedName) return;
     const cards = listEl.querySelectorAll(".card[data-name]");
     cards.forEach((card) => {
-      card.classList.toggle("is-selected", card.dataset.name === state.selectedName);
+      const on = !!state.selectedName && card.dataset.name === state.selectedName;
+      card.classList.toggle("is-selected", on);
     });
   }
 
@@ -484,11 +495,18 @@
   const mapMeta = $("mapMeta");
   const mapCoords = $("mapCoords");
   const mapCanvas = $("mapCanvas");
+  const mapPins = $("mapPins");
   const mapCloseBtn = $("mapCloseBtn");
   const mapLoader = $("mapLoader");
   const spawnCache = Object.create(null);
   let lastSpawn = null;
   let mapDrawRaf = 0;
+  let pinRenderTimer = 0;
+  let spawnLoading = false;
+  let mapView = { ox: 0, oy: 0, scale: 1, sx: 0, sy: 0 };
+  let spawnLoadToken = 0;
+  const PIN_SVG =
+    '<svg viewBox="0 0 16 22" aria-hidden="true"><path class="pin-body" d="M8 21S1.4 13.1 1.4 8A6.6 6.6 0 0 1 14.6 8C14.6 13.1 8 21 8 21z" fill="#d4453d" stroke="#f0d79a" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="7.6" r="2" fill="#f3e2b0"/></svg>';
 
   // Calibración mundo → píxeles (l2dife/php-map BASE_* para 1812x2620)
   const MAP_IMG_SRC = "interlude.png";
@@ -518,25 +536,25 @@
     return Math.max(min, Math.min(max, v));
   }
 
-  function drawBossMarker(ctx, mx, my, desktop) {
-    const r = desktop ? 9 : 6;
+  function drawBossPin(ctx, mx, my, alive) {
+    const h = 16;
+    const w = 11;
     ctx.save();
-    ctx.strokeStyle = "rgba(255, 230, 140, 0.85)";
-    ctx.lineWidth = desktop ? 2.4 : 1.6;
+    ctx.translate(mx, my);
     ctx.beginPath();
-    ctx.arc(mx, my, r + (desktop ? 8 : 5), 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = "rgba(255, 42, 31, 0.22)";
-    ctx.beginPath();
-    ctx.arc(mx, my, r + (desktop ? 6 : 4), 0, Math.PI * 2);
+    ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(-w / 2, -h * 0.32, -w / 2, -h * 0.72, 0, -h);
+    ctx.bezierCurveTo(w / 2, -h * 0.72, w / 2, -h * 0.32, 0, 0);
+    ctx.closePath();
+    ctx.fillStyle = alive ? "#2f9e5a" : "#d4453d";
     ctx.fill();
-    ctx.fillStyle = "#ff2a1f";
-    ctx.beginPath();
-    ctx.arc(mx, my, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "#ffe08a";
-    ctx.lineWidth = desktop ? 2 : 1.4;
+    ctx.strokeStyle = "#f0d79a";
+    ctx.lineWidth = 1.1;
     ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, -h * 0.62, 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = "#f3e2b0";
+    ctx.fill();
     ctx.restore();
   }
 
@@ -548,9 +566,9 @@
     return { cssW: cssW, cssH: cssW };
   }
 
-  function cropForView(cssW, cssH, zoomed) {
+  function cropForView(cssW, cssH) {
     const aspect = cssW / Math.max(cssH, 1);
-    let cropH = zoomed ? (isDesktopLayout() ? 780 : MAP_CROP) : MAP_CROP * 1.85;
+    let cropH = MAP_CROP;
     let cropW = cropH * aspect;
     if (cropW > MAP_W) {
       cropW = MAP_W;
@@ -561,6 +579,24 @@
       cropW = cropH * aspect;
     }
     return { cropW: cropW, cropH: cropH };
+  }
+
+  function worldToScreen(x, y) {
+    const pos = worldToMapPx(x, y);
+    return {
+      x: mapView.ox + (pos.px - mapView.sx) * mapView.scale,
+      y: mapView.oy + (pos.py - mapView.sy) * mapView.scale,
+    };
+  }
+
+  function drawFullWorld(ctx, cssW, cssH) {
+    const scale = Math.min(cssW / MAP_W, cssH / MAP_H);
+    const drawW = MAP_W * scale;
+    const drawH = MAP_H * scale;
+    const ox = (cssW - drawW) / 2;
+    const oy = (cssH - drawH) / 2;
+    mapView = { ox: ox, oy: oy, scale: scale, sx: 0, sy: 0 };
+    ctx.drawImage(mapImg, 0, 0, MAP_W, MAP_H, ox, oy, drawW, drawH);
   }
 
   function drawWorldMap(spawn) {
@@ -594,9 +630,18 @@
       return;
     }
 
-    const desktop = isDesktopLayout();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    if (isDesktopLayout()) {
+      drawFullWorld(ctx, cssW, cssH);
+      renderPins();
+      return;
+    }
+
+    mapPins.hidden = true;
     const hasSpawn = spawn && typeof spawn.x === "number" && typeof spawn.y === "number";
-    const crop = cropForView(cssW, cssH, hasSpawn);
+    const crop = cropForView(cssW, cssH);
     let sx;
     let sy;
 
@@ -609,8 +654,13 @@
       sy = (MAP_H - crop.cropH) / 2;
     }
 
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
+    mapView = {
+      ox: 0,
+      oy: 0,
+      scale: cssW / crop.cropW,
+      sx: sx,
+      sy: sy,
+    };
     ctx.drawImage(mapImg, sx, sy, crop.cropW, crop.cropH, 0, 0, cssW, cssH);
 
     const grd = ctx.createRadialGradient(
@@ -632,11 +682,7 @@
       ctx.fillStyle = "#f3e2b0";
       ctx.font = "600 13px 'Noto Sans', sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(
-        desktop ? "Seleccioná un boss para centrar el mapa" : "Sin coordenadas de spawn",
-        cssW / 2,
-        cssH / 2
-      );
+      ctx.fillText("Sin coordenadas de spawn", cssW / 2, cssH / 2);
       ctx.textAlign = "start";
       return;
     }
@@ -644,7 +690,18 @@
     const pos = worldToMapPx(spawn.x, spawn.y);
     const mx = ((pos.px - sx) / crop.cropW) * cssW;
     const my = ((pos.py - sy) / crop.cropH) * cssH;
-    drawBossMarker(ctx, mx, my, desktop);
+    const boss = state.bosses.find(function (b) {
+      return b.name === state.selectedName;
+    });
+    drawBossPin(ctx, mx, my, !!(boss && boss.alive));
+  }
+
+  function schedulePinRender() {
+    if (pinRenderTimer) return;
+    pinRenderTimer = setTimeout(function () {
+      pinRenderTimer = 0;
+      renderPins();
+    }, 180);
   }
 
   function scheduleMapDraw() {
@@ -654,6 +711,176 @@
         drawWorldMap();
       }
     });
+  }
+
+  function renderPins() {
+    if (!mapPins) return;
+    if (!isDesktopLayout()) {
+      mapPins.hidden = true;
+      mapPins.innerHTML = "";
+      return;
+    }
+    const size = mapViewSize();
+    const parts = [];
+    state.bosses.forEach(function (b) {
+      const spawn = spawnCache[b.name];
+      if (!spawn || typeof spawn.x !== "number" || typeof spawn.y !== "number") return;
+      const p = worldToScreen(spawn.x, spawn.y);
+      if (p.x < -12 || p.y < -12 || p.x > size.cssW + 12 || p.y > size.cssH + 12) return;
+      const selected = b.name === state.selectedName;
+      parts.push(
+        '<button type="button" class="map-pin ' +
+          (b.alive ? "is-alive" : "is-dead") +
+          (selected ? " is-selected" : "") +
+          '" data-name="' +
+          escapeHtml(b.name) +
+          '" data-city="' +
+          escapeHtml(b.city) +
+          '" title="' +
+          escapeHtml(b.name) +
+          '" aria-label="' +
+          escapeHtml(b.name) +
+          '" style="left:' +
+          p.x.toFixed(1) +
+          "px;top:" +
+          p.y.toFixed(1) +
+          'px">' +
+          PIN_SVG +
+          "</button>"
+      );
+    });
+    mapPins.hidden = false;
+    mapPins.innerHTML = parts.join("");
+    updateDesktopMapStatus();
+  }
+
+  function syncSelectedPin() {
+    if (!mapPins) return;
+    mapPins.querySelectorAll(".map-pin").forEach(function (pin) {
+      pin.classList.toggle("is-selected", pin.dataset.name === state.selectedName);
+    });
+  }
+
+  function updateDesktopMapStatus() {
+    if (!isDesktopLayout()) return;
+    const total = state.bosses.length;
+    const ready = state.bosses.filter(function (b) {
+      const spawn = spawnCache[b.name];
+      return spawn && typeof spawn.x === "number";
+    }).length;
+    if (state.selectedName) return;
+    mapBossName.textContent = "Mapa";
+    mapMeta.textContent =
+      ready === total
+        ? "Todos los bosses · " + ready + " ubicaciones"
+        : "Cargando ubicaciones · " + ready + "/" + total;
+    mapCoords.textContent = "";
+  }
+
+  function applySpawnMeta(spawn, fallbackCity) {
+    const bits = [];
+    if (spawn.location && spawn.location.name) bits.push(spawn.location.name);
+    if (spawn.region && spawn.region.name) bits.push(spawn.region.name);
+    if (fallbackCity && fallbackCity !== "-") bits.push(fallbackCity);
+    mapMeta.textContent = bits.filter(Boolean).join(" · ") || "Ubicación encontrada";
+    mapCoords.textContent =
+      "X: " + spawn.x + "   Y: " + spawn.y + "   Z: " + spawn.z + "   ID: " + spawn.id;
+  }
+
+  function readSpawnCache() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SPAWN_CACHE_KEY) || "null");
+      if (raw && typeof raw === "object") {
+        Object.keys(raw).forEach(function (name) {
+          if (raw[name] && typeof raw[name].x === "number") spawnCache[name] = raw[name];
+        });
+      }
+    } catch (_) {}
+  }
+
+  function writeSpawnCache() {
+    try {
+      localStorage.setItem(SPAWN_CACHE_KEY, JSON.stringify(spawnCache));
+    } catch (_) {}
+  }
+
+  async function fetchMonsterCatalog() {
+    const [grand, raid] = await Promise.all([
+      apiJson("https://l2api.dev/api/interlude/monsters?npcType=GrandBoss&limit=50"),
+      apiJson("https://l2api.dev/api/interlude/monsters?npcType=RaidBoss&limit=300"),
+    ]);
+    return [].concat((grand && grand.data) || [], (raid && raid.data) || []);
+  }
+
+  async function fetchSpawnsOnly(monsterId) {
+    try {
+      const npcSpawns = await apiJson(
+        "https://l2api.dev/api/interlude/npcs/" + monsterId + "/spawns"
+      );
+      if (npcSpawns.data && npcSpawns.data[0]) return npcSpawns.data[0];
+    } catch (_) {}
+    const raw = await apiJson(
+      "https://l2api.dev/api/interlude/raw/monsters/" + monsterId + "/spawns"
+    );
+    return (raw.data && raw.data[0]) || null;
+  }
+
+  function catalogByName(list) {
+    const map = Object.create(null);
+    (list || []).forEach(function (m) {
+      const key = normalizeName(m.name);
+      const prev = map[key];
+      if (!prev || /GrandBoss/i.test(m.npcType || "")) map[key] = m;
+    });
+    return map;
+  }
+
+  async function loadAllBossSpawns() {
+    if (spawnLoading) return;
+    spawnLoading = true;
+    const token = ++spawnLoadToken;
+    try {
+      readSpawnCache();
+      renderPins();
+      const pending = state.bosses.filter(function (b) {
+        return !(spawnCache[b.name] && typeof spawnCache[b.name].x === "number");
+      });
+      if (!pending.length) return;
+
+      let catalogMap = null;
+      try {
+        catalogMap = catalogByName(await fetchMonsterCatalog());
+      } catch (_) {
+        catalogMap = Object.create(null);
+      }
+      if (token !== spawnLoadToken) return;
+
+      let i = 0;
+      async function worker() {
+        while (i < pending.length && token === spawnLoadToken) {
+          const b = pending[i++];
+          try {
+            const hint = catalogMap[normalizeName(b.name)] || null;
+            await fetchSpawn(b.name, hint, { skipDetail: true });
+            if (i % 12 === 0) writeSpawnCache();
+            schedulePinRender();
+          } catch (_) {}
+        }
+      }
+      await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
+      if (token === spawnLoadToken) {
+        writeSpawnCache();
+        renderPins();
+      }
+    } finally {
+      spawnLoading = false;
+    }
+  }
+
+  function ensureDesktopPins() {
+    if (!isDesktopLayout() || !state.bosses.length) return;
+    scheduleMapDraw();
+    loadAllBossSpawns().catch(function () {});
   }
 
   async function apiJson(url) {
@@ -691,48 +918,34 @@
     return scored[0] && scored[0].score >= 30 ? scored[0].m : null;
   }
 
-  async function fetchSpawn(name) {
-    if (spawnCache[name]) return spawnCache[name];
-    const q = encodeURIComponent(name);
-    const search = await apiJson(
-      "https://l2api.dev/api/interlude/monsters?q=" + q + "&limit=40"
-    );
-    const monster = pickMonster(search.data, name);
+  async function fetchSpawn(name, monsterHint, opts) {
+    if (spawnCache[name] && typeof spawnCache[name].x === "number") return spawnCache[name];
+    let monster = monsterHint || null;
+    if (!monster) {
+      const q = encodeURIComponent(name);
+      const search = await apiJson(
+        "https://l2api.dev/api/interlude/monsters?q=" + q + "&limit=40"
+      );
+      monster = pickMonster(search.data, name);
+    }
     if (!monster) throw new Error("Boss no encontrado en l2api");
 
-    let spawn = null;
-    let region = null;
-    let location = null;
-
-    try {
-      const npcSpawns = await apiJson(
-        "https://l2api.dev/api/interlude/npcs/" + monster.id + "/spawns"
-      );
-      spawn = (npcSpawns.data && npcSpawns.data[0]) || null;
-      if (spawn) {
-        region = spawn.region || null;
-        location = spawn.location || null;
-      }
-    } catch (_) {}
-
-    if (!spawn) {
-      const raw = await apiJson(
-        "https://l2api.dev/api/interlude/raw/monsters/" + monster.id + "/spawns"
-      );
-      spawn = (raw.data && raw.data[0]) || null;
-    }
-
+    const spawn = await fetchSpawnsOnly(monster.id);
     if (!spawn) throw new Error("Sin coordenadas de spawn");
 
-    // Completar region desde detalle si falta
+    let region = spawn.region || null;
+    let location = spawn.location || null;
+
     if (!region || !location) {
-      try {
-        const detail = await apiJson(
-          "https://l2api.dev/api/interlude/monsters/" + monster.id
-        );
-        region = region || (detail.data && detail.data.primaryRegion) || null;
-        location = location || (detail.data && detail.data.primaryLocation) || null;
-      } catch (_) {}
+      if (!(opts && opts.skipDetail)) {
+        try {
+          const detail = await apiJson(
+            "https://l2api.dev/api/interlude/monsters/" + monster.id
+          );
+          region = region || (detail.data && detail.data.primaryRegion) || null;
+          location = location || (detail.data && detail.data.primaryLocation) || null;
+        } catch (_) {}
+      }
     }
 
     const result = {
@@ -762,12 +975,49 @@
     );
   }
 
-  function openMap(name, fallbackCity) {
+  function selectBoss(name, fallbackCity, fromPin) {
     state.selectedName = name;
     state.selectedCity = fallbackCity || null;
     syncSelectedCard();
-    showMapPanel();
+    syncSelectedPin();
+    if (fromPin) {
+      const card = listEl.querySelector('.card.is-selected');
+      if (card) card.scrollIntoView({ block: "nearest" });
+    }
     mapBossName.textContent = name;
+    const cached = spawnCache[name];
+    if (cached && typeof cached.x === "number") {
+      applySpawnMeta(cached, fallbackCity);
+    } else {
+      mapMeta.textContent = fallbackCity && fallbackCity !== "-" ? "Ciudad: " + fallbackCity : "…";
+      mapCoords.textContent = "";
+    }
+  }
+
+  function openMap(name, fallbackCity, fromPin) {
+    selectBoss(name, fallbackCity, fromPin);
+    showMapPanel();
+
+    if (isDesktopLayout()) {
+      const cached = spawnCache[name];
+      if (cached && typeof cached.x === "number") return;
+      fetchSpawn(name)
+        .then(function (spawn) {
+          if (state.selectedName !== name) return;
+          applySpawnMeta(spawn, fallbackCity);
+          writeSpawnCache();
+          renderPins();
+        })
+        .catch(function (err) {
+          if (state.selectedName !== name) return;
+          mapMeta.textContent =
+            "No se pudo obtener el mapa" +
+            (fallbackCity && fallbackCity !== "-" ? " · Ciudad: " + fallbackCity : "");
+          mapCoords.textContent = String(err.message || err);
+        });
+      return;
+    }
+
     mapMeta.textContent = fallbackCity && fallbackCity !== "-" ? "Ciudad: " + fallbackCity : "…";
     mapCoords.textContent = "";
     setMapLoading(true);
@@ -776,13 +1026,7 @@
     fetchSpawn(name)
       .then(function (spawn) {
         if (state.selectedName !== name) return;
-        const bits = [];
-        if (spawn.location && spawn.location.name) bits.push(spawn.location.name);
-        if (spawn.region && spawn.region.name) bits.push(spawn.region.name);
-        if (fallbackCity && fallbackCity !== "-") bits.push(fallbackCity);
-        mapMeta.textContent = bits.filter(Boolean).join(" · ") || "Ubicación encontrada";
-        mapCoords.textContent =
-          "X: " + spawn.x + "   Y: " + spawn.y + "   Z: " + spawn.z + "   ID: " + spawn.id;
+        applySpawnMeta(spawn, fallbackCity);
         drawWorldMap(spawn);
       })
       .catch(function (err) {
@@ -801,14 +1045,11 @@
   function resetDesktopMap() {
     state.selectedName = null;
     state.selectedCity = null;
-    listEl.querySelectorAll(".card.is-selected").forEach(function (card) {
-      card.classList.remove("is-selected");
-    });
-    mapBossName.textContent = "Mapa";
-    mapMeta.textContent = "Seleccioná un boss para ver su ubicación";
-    mapCoords.textContent = "";
+    syncSelectedCard();
+    syncSelectedPin();
     setMapLoading(false);
-    drawWorldMap(null);
+    updateDesktopMapStatus();
+    scheduleMapDraw();
   }
 
   function closeMap() {
@@ -826,12 +1067,17 @@
   function syncMapChrome() {
     if (isDesktopLayout()) {
       showMapPanel();
-      if (!state.selectedName) resetDesktopMap();
-      else scheduleMapDraw();
+      ensureDesktopPins();
     } else if (!state.selectedName) {
       setMapLoading(false);
       mapOverlay.classList.remove("is-on");
       mapOverlay.hidden = true;
+      if (mapPins) {
+        mapPins.hidden = true;
+        mapPins.innerHTML = "";
+      }
+    } else {
+      scheduleMapDraw();
     }
   }
 
@@ -900,6 +1146,11 @@
     mapOverlay.addEventListener("click", (e) => {
       if (isDesktopLayout()) return;
       if (e.target === mapOverlay) closeMap();
+    });
+    mapPins.addEventListener("click", (e) => {
+      const pin = e.target.closest(".map-pin");
+      if (!pin) return;
+      openMap(pin.dataset.name, pin.dataset.city, true);
     });
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && mapOverlay.classList.contains("is-on")) closeMap();
