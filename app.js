@@ -2,13 +2,20 @@
   const SOURCE = "https://www.sepul.com.ar/?page=boss";
   const CACHE_KEY = "l2sepul_bosses_v1";
   const CACHE_FLUSH_KEY = "l2sepul_flush";
-  const CACHE_FLUSH_VER = "20260917c";
+  const CACHE_FLUSH_VER = "20260917d";
   const SPAWN_CACHE_KEY = "l2sepul_spawns_v1";
   const LIVE_TTL_MS = 90 * 1000;
 
   try {
     if (localStorage.getItem(CACHE_FLUSH_KEY) !== CACHE_FLUSH_VER) {
-      localStorage.removeItem(CACHE_KEY);
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.indexOf("l2sepul_") === 0) keys.push(k);
+      }
+      keys.forEach(function (k) {
+        localStorage.removeItem(k);
+      });
       localStorage.setItem(CACHE_FLUSH_KEY, CACHE_FLUSH_VER);
     }
   } catch (_) {}
