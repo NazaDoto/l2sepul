@@ -689,6 +689,30 @@
     else cam.y = clamp(cam.y, 0, MAP_H - viewH);
   }
 
+  function centerCamOnSpawn(spawn) {
+    if (!isDesktopLayout() || !spawn || typeof spawn.x !== "number" || typeof spawn.y !== "number") {
+      return;
+    }
+    const size = mapViewSize();
+    if (size.cssW < 8 || size.cssH < 8) return;
+    const pos = worldToMapPx(spawn.x, spawn.y);
+    const fitW = size.cssW / MAP_W;
+    const minScale = Math.min(fitW, size.cssH / MAP_H) * 0.92;
+    const maxScale = fitW * 8;
+    const targetCrop = 540;
+    let scale = Math.max(size.cssW / targetCrop, size.cssH / targetCrop);
+    const marginX = Math.max(48, Math.min(pos.px, MAP_W - pos.px));
+    const marginY = Math.max(48, Math.min(pos.py, MAP_H - pos.py));
+    scale = Math.max(scale, size.cssW / (2 * marginX), size.cssH / (2 * marginY));
+    cam.scale = clamp(scale, minScale, maxScale);
+    cam.x = pos.px - size.cssW / (2 * cam.scale);
+    cam.y = pos.py - size.cssH / (2 * cam.scale);
+    cam.fitted = true;
+    cam.user = true;
+    clampCam(size.cssW, size.cssH);
+    scheduleMapDraw();
+  }
+
   function syncMapViewFromCam() {
     mapView = { ox: 0, oy: 0, scale: cam.scale, sx: cam.x, sy: cam.y };
   }
@@ -704,7 +728,6 @@
 
   function positionPins() {
     if (!mapPins || !isDesktopLayout()) return;
-    const size = mapViewSize();
     const pins = mapPins.children;
     for (let i = 0; i < pins.length; i++) {
       const pin = pins[i];
@@ -714,13 +737,9 @@
         continue;
       }
       const p = worldToScreen(spawn.x, spawn.y);
-      if (p.x < -16 || p.y < -16 || p.x > size.cssW + 16 || p.y > size.cssH + 16) {
-        pin.style.display = "none";
-        continue;
-      }
-      pin.style.display = "";
       pin.style.left = p.x.toFixed(1) + "px";
       pin.style.top = p.y.toFixed(1) + "px";
+      pin.style.display = "";
     }
   }
 
@@ -846,13 +865,11 @@
       mapPins.innerHTML = "";
       return;
     }
-    const size = mapViewSize();
     const parts = [];
     filtered().forEach(function (b) {
       const spawn = spawnCache[b.name];
       if (!spawn || typeof spawn.x !== "number" || typeof spawn.y !== "number") return;
       const p = worldToScreen(spawn.x, spawn.y);
-      if (p.x < -12 || p.y < -12 || p.x > size.cssW + 12 || p.y > size.cssH + 12) return;
       const selected = b.name === state.selectedName;
       parts.push(
         '<button type="button" class="map-pin ' +
@@ -1128,6 +1145,7 @@
     const cached = spawnCache[name];
     if (cached && typeof cached.x === "number") {
       applySpawnMeta(cached, fallbackCity);
+      centerCamOnSpawn(cached);
     } else {
       mapMeta.textContent = fallbackCity && fallbackCity !== "-" ? "Ciudad: " + fallbackCity : "…";
       mapCoords.textContent = "";
@@ -1147,6 +1165,7 @@
           applySpawnMeta(spawn, fallbackCity);
           writeSpawnCache();
           renderPins();
+          centerCamOnSpawn(spawn);
         })
         .catch(function (err) {
           if (state.selectedName !== name) return;
