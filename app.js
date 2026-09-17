@@ -4,19 +4,8 @@
   const LIVE_TTL_MS = 2 * 60 * 1000; // cache local breve; no hace falta ahorrar cupo
 
   // Proxies CORS publicos (Sepul no manda Access-Control-Allow-Origin).
-  // CorsBridge: API publica sin cupo diario estricto. Microlink: fallback (25/dia).
+  // CorsBridge (api.cors.syrins.tech) esta caido; Microlink es el live principal.
   const LIVE_SOURCES = [
-    {
-      id: "corsbridge",
-      url: "https://api.cors.syrins.tech/?url=" + encodeURIComponent(SOURCE),
-      parse: async (res) => {
-        const html = await res.text();
-        if (!html || !/Antharas|Boss Status|Epic Bosses/i.test(html)) {
-          throw new Error("corsbridge empty");
-        }
-        return { type: "html", data: html };
-      },
-    },
     {
       id: "microlink",
       url:
@@ -33,6 +22,7 @@
     {
       id: "allorigins",
       url: "https://api.allorigins.win/get?url=" + encodeURIComponent(SOURCE),
+      timeout: 8000,
       parse: async (res) => {
         const data = await res.json();
         const html = data && data.contents;
@@ -42,13 +32,21 @@
     },
   ];
 
+  const DESKTOP_MQ = "(min-width: 1100px)";
+
   const state = {
     bosses: [],
     cat: "all",
     city: "all",
     query: "",
     timer: null,
+    selectedName: null,
+    selectedCity: null,
   };
+
+  function isDesktopLayout() {
+    return window.matchMedia(DESKTOP_MQ).matches;
+  }
 
   const $ = (id) => document.getElementById(id);
   const listEl = $("list");
@@ -184,7 +182,7 @@
 
   async function fetchLive(source) {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 18000);
+    const t = setTimeout(() => ctrl.abort(), source.timeout || 15000);
     try {
       const res = await fetch(source.url, {
         signal: ctrl.signal,
@@ -443,6 +441,15 @@
       html += alive.map((b, i) => cardHtml(b, i + dead.length)).join("");
     }
     listEl.innerHTML = html;
+    syncSelectedCard();
+  }
+
+  function syncSelectedCard() {
+    if (!state.selectedName) return;
+    const cards = listEl.querySelectorAll(".card[data-name]");
+    cards.forEach((card) => {
+      card.classList.toggle("is-selected", card.dataset.name === state.selectedName);
+    });
   }
 
   function tickCountdowns() {
@@ -480,6 +487,8 @@
   const mapCloseBtn = $("mapCloseBtn");
   const mapLoader = $("mapLoader");
   const spawnCache = Object.create(null);
+  let lastSpawn = null;
+  let mapDrawRaf = 0;
 
   // Calibración mundo → píxeles (l2dife/php-map BASE_* para 1812x2620)
   const MAP_IMG_SRC = "interlude.png";
@@ -509,18 +518,61 @@
     return Math.max(min, Math.min(max, v));
   }
 
-  function drawBossMarker(ctx, mx, my) {
+  function drawBossMarker(ctx, mx, my, desktop) {
+    const r = desktop ? 9 : 6;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 230, 140, 0.85)";
+    ctx.lineWidth = desktop ? 2.4 : 1.6;
+    ctx.beginPath();
+    ctx.arc(mx, my, r + (desktop ? 8 : 5), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255, 42, 31, 0.22)";
+    ctx.beginPath();
+    ctx.arc(mx, my, r + (desktop ? 6 : 4), 0, Math.PI * 2);
+    ctx.fill();
     ctx.fillStyle = "#ff2a1f";
     ctx.beginPath();
-    ctx.arc(mx, my, 6, 0, Math.PI * 2);
+    ctx.arc(mx, my, r, 0, Math.PI * 2);
     ctx.fill();
+    ctx.strokeStyle = "#ffe08a";
+    ctx.lineWidth = desktop ? 2 : 1.4;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function mapViewSize() {
+    const cssW = mapCanvas.clientWidth || 360;
+    if (isDesktopLayout()) {
+      return { cssW: cssW, cssH: mapCanvas.clientHeight || cssW };
+    }
+    return { cssW: cssW, cssH: cssW };
+  }
+
+  function cropForView(cssW, cssH, zoomed) {
+    const aspect = cssW / Math.max(cssH, 1);
+    let cropH = zoomed ? (isDesktopLayout() ? 780 : MAP_CROP) : MAP_CROP * 1.85;
+    let cropW = cropH * aspect;
+    if (cropW > MAP_W) {
+      cropW = MAP_W;
+      cropH = cropW / aspect;
+    }
+    if (cropH > MAP_H) {
+      cropH = MAP_H;
+      cropW = cropH * aspect;
+    }
+    return { cropW: cropW, cropH: cropH };
   }
 
   function drawWorldMap(spawn) {
+    if (arguments.length) lastSpawn = spawn;
+    spawn = lastSpawn;
+
     const ctx = mapCanvas.getContext("2d");
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const cssW = mapCanvas.clientWidth || 360;
-    const cssH = cssW;
+    const size = mapViewSize();
+    const cssW = size.cssW;
+    const cssH = size.cssH;
+    if (cssW < 8 || cssH < 8) return;
     mapCanvas.width = Math.round(cssW * dpr);
     mapCanvas.height = Math.round(cssH * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -537,64 +589,71 @@
       if (!mapImg.src) mapImg.src = MAP_IMG_SRC;
       mapImg.decode().then(function () {
         mapImgReady = true;
-        drawWorldMap(spawn);
+        drawWorldMap();
       }).catch(function () {});
       return;
     }
 
-    if (!spawn || typeof spawn.x !== "number" || typeof spawn.y !== "number") {
-      // sin coords: mostrar overview centrado del continente
-      const sx = (MAP_W - MAP_CROP * 1.6) / 2;
-      const sy = (MAP_H - MAP_CROP * 1.6) / 2;
-      ctx.drawImage(
-        mapImg,
-        sx,
-        sy,
-        MAP_CROP * 1.6,
-        MAP_CROP * 1.6,
-        0,
-        0,
-        cssW,
-        cssH
-      );
-      ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.fillRect(0, 0, cssW, cssH);
-      ctx.fillStyle = "#f3e2b0";
-      ctx.font = "600 13px 'Noto Sans', sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText("Sin coordenadas de spawn", cssW / 2, cssH / 2);
-      ctx.textAlign = "start";
-      return;
-    }
+    const desktop = isDesktopLayout();
+    const hasSpawn = spawn && typeof spawn.x === "number" && typeof spawn.y === "number";
+    const crop = cropForView(cssW, cssH, hasSpawn);
+    let sx;
+    let sy;
 
-    const pos = worldToMapPx(spawn.x, spawn.y);
-    const crop = MAP_CROP;
-    let sx = pos.px - crop / 2;
-    let sy = pos.py - crop / 2;
-    sx = clamp(sx, 0, MAP_W - crop);
-    sy = clamp(sy, 0, MAP_H - crop);
+    if (hasSpawn) {
+      const pos = worldToMapPx(spawn.x, spawn.y);
+      sx = clamp(pos.px - crop.cropW / 2, 0, MAP_W - crop.cropW);
+      sy = clamp(pos.py - crop.cropH / 2, 0, MAP_H - crop.cropH);
+    } else {
+      sx = (MAP_W - crop.cropW) / 2;
+      sy = (MAP_H - crop.cropH) / 2;
+    }
 
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(mapImg, sx, sy, crop, crop, 0, 0, cssW, cssH);
+    ctx.drawImage(mapImg, sx, sy, crop.cropW, crop.cropH, 0, 0, cssW, cssH);
 
-    // viñeta suave
     const grd = ctx.createRadialGradient(
       cssW / 2,
       cssH / 2,
-      cssW * 0.35,
+      Math.min(cssW, cssH) * 0.35,
       cssW / 2,
       cssH / 2,
-      cssW * 0.72
+      Math.min(cssW, cssH) * 0.78
     );
     grd.addColorStop(0, "rgba(0,0,0,0)");
     grd.addColorStop(1, "rgba(8,10,16,0.35)");
     ctx.fillStyle = grd;
     ctx.fillRect(0, 0, cssW, cssH);
 
-    const mx = ((pos.px - sx) / crop) * cssW;
-    const my = ((pos.py - sy) / crop) * cssH;
-    drawBossMarker(ctx, mx, my);
+    if (!hasSpawn) {
+      ctx.fillStyle = "rgba(0,0,0,0.28)";
+      ctx.fillRect(0, 0, cssW, cssH);
+      ctx.fillStyle = "#f3e2b0";
+      ctx.font = "600 13px 'Noto Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(
+        desktop ? "Seleccioná un boss para centrar el mapa" : "Sin coordenadas de spawn",
+        cssW / 2,
+        cssH / 2
+      );
+      ctx.textAlign = "start";
+      return;
+    }
+
+    const pos = worldToMapPx(spawn.x, spawn.y);
+    const mx = ((pos.px - sx) / crop.cropW) * cssW;
+    const my = ((pos.py - sy) / crop.cropH) * cssH;
+    drawBossMarker(ctx, mx, my, desktop);
+  }
+
+  function scheduleMapDraw() {
+    cancelAnimationFrame(mapDrawRaf);
+    mapDrawRaf = requestAnimationFrame(function () {
+      if (isDesktopLayout() || mapOverlay.classList.contains("is-on")) {
+        drawWorldMap();
+      }
+    });
   }
 
   async function apiJson(url) {
@@ -694,17 +753,29 @@
     mapLoader.hidden = !on;
   }
 
-  function openMap(name, fallbackCity) {
+  function showMapPanel() {
     mapOverlay.hidden = false;
     mapOverlay.classList.add("is-on");
+    mapOverlay.querySelector(".map-window").setAttribute(
+      "aria-modal",
+      isDesktopLayout() ? "false" : "true"
+    );
+  }
+
+  function openMap(name, fallbackCity) {
+    state.selectedName = name;
+    state.selectedCity = fallbackCity || null;
+    syncSelectedCard();
+    showMapPanel();
     mapBossName.textContent = name;
     mapMeta.textContent = fallbackCity && fallbackCity !== "-" ? "Ciudad: " + fallbackCity : "…";
     mapCoords.textContent = "";
     setMapLoading(true);
-    drawWorldMap(null);
+    if (!lastSpawn) drawWorldMap(null);
 
     fetchSpawn(name)
       .then(function (spawn) {
+        if (state.selectedName !== name) return;
         const bits = [];
         if (spawn.location && spawn.location.name) bits.push(spawn.location.name);
         if (spawn.region && spawn.region.name) bits.push(spawn.region.name);
@@ -715,6 +786,7 @@
         drawWorldMap(spawn);
       })
       .catch(function (err) {
+        if (state.selectedName !== name) return;
         mapMeta.textContent =
           "No se pudo obtener el mapa" +
           (fallbackCity && fallbackCity !== "-" ? " · Ciudad: " + fallbackCity : "");
@@ -722,14 +794,45 @@
         drawWorldMap(null);
       })
       .finally(function () {
-        setMapLoading(false);
+        if (state.selectedName === name) setMapLoading(false);
       });
   }
 
+  function resetDesktopMap() {
+    state.selectedName = null;
+    state.selectedCity = null;
+    listEl.querySelectorAll(".card.is-selected").forEach(function (card) {
+      card.classList.remove("is-selected");
+    });
+    mapBossName.textContent = "Mapa";
+    mapMeta.textContent = "Seleccioná un boss para ver su ubicación";
+    mapCoords.textContent = "";
+    setMapLoading(false);
+    drawWorldMap(null);
+  }
+
   function closeMap() {
+    if (isDesktopLayout()) {
+      resetDesktopMap();
+      return;
+    }
     setMapLoading(false);
     mapOverlay.classList.remove("is-on");
     mapOverlay.hidden = true;
+    state.selectedName = null;
+    state.selectedCity = null;
+  }
+
+  function syncMapChrome() {
+    if (isDesktopLayout()) {
+      showMapPanel();
+      if (!state.selectedName) resetDesktopMap();
+      else scheduleMapDraw();
+    } else if (!state.selectedName) {
+      setMapLoading(false);
+      mapOverlay.classList.remove("is-on");
+      mapOverlay.hidden = true;
+    }
   }
 
   function buildCityChips() {
@@ -795,15 +898,31 @@
 
     mapCloseBtn.addEventListener("click", closeMap);
     mapOverlay.addEventListener("click", (e) => {
+      if (isDesktopLayout()) return;
       if (e.target === mapOverlay) closeMap();
     });
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && mapOverlay.classList.contains("is-on")) closeMap();
     });
+
+    const desktopMq = window.matchMedia(DESKTOP_MQ);
+    if (desktopMq.addEventListener) {
+      desktopMq.addEventListener("change", syncMapChrome);
+    } else if (desktopMq.addListener) {
+      desktopMq.addListener(syncMapChrome);
+    }
+    window.addEventListener("resize", scheduleMapDraw);
+    if (window.ResizeObserver) {
+      const mapFrame = mapCanvas.parentElement;
+      if (mapFrame) {
+        new ResizeObserver(scheduleMapDraw).observe(mapFrame);
+      }
+    }
   }
 
   buildCityChips();
   bind();
+  syncMapChrome();
   state.timer = setInterval(tickCountdowns, 1000);
   loadBosses().catch(() => {});
 })();
