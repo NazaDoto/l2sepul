@@ -249,6 +249,7 @@ body {
   max-height: calc(100dvh - 280px);
   overflow: auto;
   -webkit-overflow-scrolling: touch;
+  scroll-padding-top: 38px;
 }
 
 .section-title {
@@ -275,6 +276,7 @@ body {
   background: transparent;
   animation: row-in 0.25s ease both;
   cursor: pointer;
+  scroll-margin-top: 38px;
 }
 
 .card:nth-child(even) {

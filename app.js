@@ -2,9 +2,9 @@
   const SOURCE = "https://www.sepul.com.ar/?page=boss";
   const CACHE_KEY = "l2sepul_bosses_v1";
   const CACHE_FLUSH_KEY = "l2sepul_flush";
-  const CACHE_FLUSH_VER = "20260917b";
+  const CACHE_FLUSH_VER = "20260917c";
   const SPAWN_CACHE_KEY = "l2sepul_spawns_v1";
-  const LIVE_TTL_MS = 2 * 60 * 1000; // cache local breve; no hace falta ahorrar cupo
+  const LIVE_TTL_MS = 90 * 1000;
 
   try {
     if (localStorage.getItem(CACHE_FLUSH_KEY) !== CACHE_FLUSH_VER) {
@@ -13,9 +13,33 @@
     }
   } catch (_) {}
 
-  // Proxies CORS publicos (Sepul no manda Access-Control-Allow-Origin).
-  // CorsBridge (api.cors.syrins.tech) esta caido; Microlink es el live principal.
+  function asHtmlPayload(html) {
+    if (!html || String(html).length < 1500) throw new Error("html corto");
+    if (!/Antharas|Boss Status|Epic Bosses|Raid Bosses/i.test(html)) {
+      throw new Error("html sin bosses");
+    }
+    return { type: "html", data: html };
+  }
+
+  // Proxies CORS publicos. Sepul no manda Access-Control-Allow-Origin.
+  // Corsfix: sin cupo diario, HTML original. El resto son fallbacks.
   const LIVE_SOURCES = [
+    {
+      id: "corsfix",
+      url: "https://proxy.corsfix.com/?url=" + encodeURIComponent(SOURCE),
+      parse: async (res) => asHtmlPayload(await res.text()),
+    },
+    {
+      id: "corsfix-raw",
+      url: "https://proxy.corsfix.com/?" + SOURCE,
+      parse: async (res) => asHtmlPayload(await res.text()),
+    },
+    {
+      id: "corslol",
+      url: "https://api.cors.lol/?url=" + encodeURIComponent(SOURCE),
+      timeout: 12000,
+      parse: async (res) => asHtmlPayload(await res.text()),
+    },
     {
       id: "microlink",
       url:
@@ -26,18 +50,18 @@
         const data = await res.json();
         const html = data && data.data && data.data.html;
         if (!html || data.status !== "success") throw new Error("microlink empty");
-        return { type: "html", data: html };
+        return asHtmlPayload(html);
       },
     },
     {
       id: "allorigins",
       url: "https://api.allorigins.win/get?url=" + encodeURIComponent(SOURCE),
-      timeout: 8000,
+      timeout: 18000,
       parse: async (res) => {
         const data = await res.json();
         const html = data && data.contents;
         if (!html) throw new Error("allorigins empty");
-        return { type: "html", data: html };
+        return asHtmlPayload(html);
       },
     },
   ];
@@ -87,7 +111,8 @@
 
   function isAlive(status) {
     const s = String(status).toLowerCase();
-    return s.includes("vivo") || s.includes("alive");
+    if (/muerto|dead|died|down/.test(s)) return false;
+    return /vivo|alive|\balive\b|\blive\b/.test(s);
   }
 
   function isEpic(category) {
@@ -140,36 +165,61 @@
       .trim();
   }
 
+  function parseTableRows(table, category) {
+    const bosses = [];
+    for (const tr of table.querySelectorAll("tr")) {
+      const tds = [...tr.querySelectorAll("td")];
+      if (tds.length < 4) continue;
+      const name = stripTags(tds[0].innerHTML);
+      if (!name || /nombre|name/i.test(name)) continue;
+      const status = stripTags(tds[2].innerHTML);
+      const respawnRaw = stripTags(tds[3].innerHTML);
+      bosses.push({
+        name,
+        level: parseInt(stripTags(tds[1].innerHTML), 10) || 0,
+        status,
+        respawnRaw,
+        respawnAt: parseRespawn(respawnRaw),
+        category,
+        city: resolveCity(name),
+        epic: isEpic(category),
+        quest: isQuestBoss(name),
+        alive: isAlive(status),
+      });
+    }
+    return bosses;
+  }
+
+  function nextTable(fromEl) {
+    let el = fromEl.nextElementSibling;
+    while (el) {
+      if (el.tagName === "TABLE") return el;
+      const inner = el.querySelector && el.querySelector("table");
+      if (inner) return inner;
+      el = el.nextElementSibling;
+    }
+    return null;
+  }
+
   function parseBossHtml(html) {
     const doc = new DOMParser().parseFromString(html, "text/html");
     const bosses = [];
-    const headings = [...doc.querySelectorAll("h2")];
-    for (const h2 of headings) {
-      const category = h2.textContent.trim();
-      let table = h2.nextElementSibling;
-      while (table && table.tagName !== "TABLE") table = table.nextElementSibling;
+    const headings = [...doc.querySelectorAll("h1, h2, h3")];
+    for (const h of headings) {
+      const category = h.textContent.trim();
+      if (!/boss/i.test(category)) continue;
+      const table = nextTable(h);
       if (!table) continue;
-      for (const tr of table.querySelectorAll("tr")) {
-        const tds = [...tr.querySelectorAll("td")];
-        if (tds.length < 4) continue;
-        const name = stripTags(tds[0].innerHTML);
-        if (!name || /nombre|name/i.test(name)) continue;
-        const level = parseInt(stripTags(tds[1].innerHTML), 10) || 0;
-        const status = stripTags(tds[2].innerHTML);
-        const respawnRaw = stripTags(tds[3].innerHTML);
-        bosses.push({
-          name,
-          level,
-          status,
-          respawnRaw,
-          respawnAt: parseRespawn(respawnRaw),
-          category,
-          city: resolveCity(name),
-          epic: isEpic(category),
-          quest: isQuestBoss(name),
-          alive: isAlive(status),
-        });
-      }
+      bosses.push.apply(bosses, parseTableRows(table, category));
+    }
+    if (bosses.length) return bosses;
+
+    for (const table of doc.querySelectorAll("table")) {
+      let category = "Raid Bosses";
+      let prev = table.previousElementSibling;
+      while (prev && !/^H[1-4]$/.test(prev.tagName)) prev = prev.previousElementSibling;
+      if (prev) category = prev.textContent.trim() || category;
+      bosses.push.apply(bosses, parseTableRows(table, category));
     }
     return bosses;
   }
@@ -231,6 +281,20 @@
     return null;
   }
 
+  function cacheLooksStale(bosses) {
+    const list = Array.isArray(bosses) ? bosses : [];
+    const dated = list.filter(function (b) {
+      const raw = b.respawn || b.respawnRaw;
+      return raw && raw !== "-" && parseRespawn(raw);
+    });
+    if (dated.length < 8) return false;
+    const overdue = dated.filter(function (b) {
+      const at = parseRespawn(b.respawn || b.respawnRaw);
+      return at && Date.now() - at.getTime() > 8 * 3600 * 1000;
+    });
+    return overdue.length > dated.length * 0.45;
+  }
+
   function applyBosses(list, source) {
     state.bosses = finalizeBosses(list);
     return state.bosses.length > 0 ? source : null;
@@ -244,10 +308,13 @@
     state.bosses = [];
 
     try {
-      // Reusa localStorage fresco para no quemar el free tier de Microlink
       if (!force) {
         const session = readSessionCache();
-        if (session && Date.now() - session.at < LIVE_TTL_MS) {
+        if (
+          session &&
+          Date.now() - session.at < LIVE_TTL_MS &&
+          !cacheLooksStale(session.bosses)
+        ) {
           source = applyBosses(parseBossJson(session.bosses), "session");
         }
       }
@@ -259,7 +326,7 @@
             let bosses =
               result.type === "json" ? parseBossJson(result.data) : parseBossHtml(result.data);
             bosses = finalizeBosses(bosses);
-            if (!bosses.length) throw new Error("Sin bosses");
+            if (bosses.length < 10) throw new Error("parse incompleto");
             state.bosses = bosses;
             source = "live";
             try {
@@ -279,6 +346,7 @@
         try {
           const raw = loadEmbeddedCache();
           if (!raw) throw new Error("Cache vacio");
+          if (cacheLooksStale(raw)) throw new Error("Cache viejo");
           source = applyBosses(parseBossJson(raw), "cache");
         } catch (e) {
           lastErr = e;
@@ -287,7 +355,11 @@
 
       if (!source) {
         const session = readSessionCache();
-        if (session) source = applyBosses(parseBossJson(session.bosses), "local");
+        if (session && !cacheLooksStale(session.bosses)) {
+          source = applyBosses(parseBossJson(session.bosses), "local");
+        } else if (session) {
+          source = applyBosses(parseBossJson(session.bosses), "local");
+        }
       }
 
       if (!state.bosses.length) {
@@ -1030,14 +1102,27 @@
     );
   }
 
+  function scrollCardIntoList(card) {
+    if (!card || !listEl) return;
+    const listRect = listEl.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    const header = listEl.querySelector(".section-title");
+    const pad = (header ? header.getBoundingClientRect().height : 32) + 6;
+    if (cardRect.top < listRect.top + pad) {
+      listEl.scrollTop += cardRect.top - listRect.top - pad;
+    } else if (cardRect.bottom > listRect.bottom) {
+      listEl.scrollTop += cardRect.bottom - listRect.bottom;
+    }
+  }
+
   function selectBoss(name, fallbackCity, fromPin) {
     state.selectedName = name;
     state.selectedCity = fallbackCity || null;
     syncSelectedCard();
     syncSelectedPin();
     if (fromPin) {
-      const card = listEl.querySelector('.card.is-selected');
-      if (card) card.scrollIntoView({ block: "nearest" });
+      const card = listEl.querySelector(".card.is-selected");
+      if (card) scrollCardIntoList(card);
     }
     mapBossName.textContent = name;
     const cached = spawnCache[name];
